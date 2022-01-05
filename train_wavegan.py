@@ -42,7 +42,7 @@ def train(fps, args):
   # Make z vector
   n_classes = 30
   z = tf.random_uniform([args.train_batch_size, args.wavegan_latent_dim], -1., 1., dtype=tf.float32)
-  oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+  oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
   oneHot=np.resize(oneHot, (64, oneHot.size))
 
   #oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
@@ -56,6 +56,9 @@ def train(fps, args):
       with tf.variable_scope('pp_filt'):
         G_z = tf.layers.conv1d(G_z, 1, args.wavegan_genr_pp_len, use_bias=False, padding='same')
   G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
+
+  oneHot = oneHot[:, :, np.newaxis]
+  G_z = tf.concat([G_z, oneHot], axis=1)
 
   # Print G summary
   print('-' * 80)
@@ -80,7 +83,7 @@ def train(fps, args):
 
   # Make real discriminator
   with tf.name_scope('D_x'), tf.variable_scope('D'):
-    D_x = WaveGANDiscriminator(x, oneHot, **args.wavegan_d_kwargs)
+    D_x = WaveGANDiscriminator(x, **args.wavegan_d_kwargs)
   D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
 
   # Print D summary
@@ -97,7 +100,7 @@ def train(fps, args):
 
   # Make fake discriminator
   with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
-    D_G_z = WaveGANDiscriminator(G_z, oneHot, **args.wavegan_d_kwargs)
+    D_G_z = WaveGANDiscriminator(G_z, **args.wavegan_d_kwargs)
 
   # Create loss
   D_clip_weights = None

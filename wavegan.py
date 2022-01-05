@@ -172,7 +172,6 @@ def apply_phaseshuffle(x, rad, pad_type='reflect'):
 """
 def WaveGANDiscriminator(
     x,
-    onehot,
     kernel_len=25,
     dim=64,
     use_batchnorm=False,
@@ -192,7 +191,8 @@ def WaveGANDiscriminator(
 
   # Layer 0
   # [16384, 1] -> [4096, 64]
-  output = x
+  output = x[:, :-30, :]
+  onehot = x[:, -30:, :]
   with tf.variable_scope('downconv_0'):
     output = tf.layers.conv1d(output, dim, kernel_len, 4, padding='SAME')
   output = lrelu(output)
@@ -247,6 +247,7 @@ def WaveGANDiscriminator(
   # Flatten
   output = tf.reshape(output, [batch_size, -1])
 
+  onehot = tf.squeeze(onehot, axis=None)
   output = tf.concat([output, onehot], axis=1)
 
   # Connect to single logit
