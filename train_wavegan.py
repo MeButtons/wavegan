@@ -40,7 +40,14 @@ def train(fps, args):
         prefetch_gpu_num=args.data_prefetch_gpu_num)[:, :, 0]
 
   # Make z vector
+  n_classes = 30
   z = tf.random_uniform([args.train_batch_size, args.wavegan_latent_dim], -1., 1., dtype=tf.float32)
+  oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+  oneHot=np.resize(oneHot, (64, oneHot.size))
+
+  #oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
+  #z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
+  z = tf.concat([z, oneHot], axis=1)
 
   # Make generator
   with tf.variable_scope('G'):
@@ -73,7 +80,7 @@ def train(fps, args):
 
   # Make real discriminator
   with tf.name_scope('D_x'), tf.variable_scope('D'):
-    D_x = WaveGANDiscriminator(x, **args.wavegan_d_kwargs)
+    D_x = WaveGANDiscriminator(x, oneHot, **args.wavegan_d_kwargs)
   D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
 
   # Print D summary
@@ -90,7 +97,7 @@ def train(fps, args):
 
   # Make fake discriminator
   with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
-    D_G_z = WaveGANDiscriminator(G_z, **args.wavegan_d_kwargs)
+    D_G_z = WaveGANDiscriminator(G_z, oneHot, **args.wavegan_d_kwargs)
 
   # Create loss
   D_clip_weights = None
@@ -595,7 +602,7 @@ if __name__ == '__main__':
     data_slice_len=16384,
     data_num_channels=1,
     data_overlap_ratio=0.,
-    data_first_slice=False,
+    data_first_slice=True,
     data_pad_end=False,
     data_normalize=False,
     data_fast_wav=False,
@@ -651,7 +658,7 @@ if __name__ == '__main__':
       raise Exception('Did not find any audio files in specified directory')
     print('Found {} audio files in specified directory'.format(len(fps)))
     infer(args)
-    train(fps, args)
+    train(fps, args)     
   elif args.mode == 'preview':
     preview(args)
   elif args.mode == 'incept':

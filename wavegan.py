@@ -1,4 +1,6 @@
+from re import A
 import tensorflow as tf
+from tensorflow.python.ops.gradients_impl import _HasAnyNotNoneGrads
 
 
 def conv1d_transpose(
@@ -170,6 +172,7 @@ def apply_phaseshuffle(x, rad, pad_type='reflect'):
 """
 def WaveGANDiscriminator(
     x,
+    onehot,
     kernel_len=25,
     dim=64,
     use_batchnorm=False,
@@ -243,6 +246,8 @@ def WaveGANDiscriminator(
 
   # Flatten
   output = tf.reshape(output, [batch_size, -1])
+
+  output = tf.concat([output, onehot], axis=1)
 
   # Connect to single logit
   with tf.variable_scope('output'):

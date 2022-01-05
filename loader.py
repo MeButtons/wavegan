@@ -5,6 +5,9 @@ import tensorflow as tf
 
 import sys
 
+from tensorflow.python.framework.tensor_shape import Dimension
+from tensorflow.python.ops.init_ops import TruncatedNormal
+
 
 def decode_audio(fp, fs=None, num_channels=1, normalize=False, fast_wav=False):
   """Decodes audio file paths into 32-bit floating point vectors.
@@ -108,9 +111,8 @@ def decode_extract_and_batch(
     A tuple of np.float32 tensors representing audio waveforms.
       audio: [batch_size, slice_len, 1, nch]
   """
-  # Create dataset of filepaths
+  # Create dataset of filepaths  
   dataset = tf.data.Dataset.from_tensor_slices(fps)
-
   # Shuffle all filepaths every epoch
   if shuffle:
     dataset = dataset.shuffle(buffer_size=len(fps))
@@ -142,7 +144,7 @@ def decode_extract_and_batch(
       num_parallel_calls=decode_parallel_calls)
 
   # Parallel
-  def _slice(audio):
+  def _slice(audio, oneHot):
     # Calculate hop size
     if slice_overlap_ratio < 0:
       raise ValueError('Overlap ratio must be greater than 0')
@@ -164,18 +166,36 @@ def decode_extract_and_batch(
         pad_value=0,
         axis=0)
 
+
+    #audioDim = audio_slices.get_shape().as_list()[0]
+    #audioDim = tf.shape(audio_slices)[0]
+    #temp1 = tf.tile(oneHot, Dimension(None))
+    #newOneHot = tf.split(temp1, audioDim)
+    #newOneHot = np.resize(oneHot, (audioDim, oneHot.size))
+    
+
+    #audio_slices = tf.concat([audio_slices, newOneHot], axis=1)
+
+
     # Only use first slice if requested
     if slice_first_only:
       audio_slices = audio_slices[:1]
 
+    audio_slices = tf.concat([audio_slices, oneHot], axis=1)
     return audio_slices
 
-  def _slice_dataset_wrapper(audio):
-    audio_slices = _slice(audio)
+  def _slice_dataset_wrapper(audio, oneHot):
+    audio_slices = _slice(audio, oneHot)
     return tf.data.Dataset.from_tensor_slices(audio_slices)
 
+  def getClassOneHot(x):
+    return tf.constant([[[[1]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]]]], dtype=tf.float32)
+
   # Extract parallel sliceuences from both audio and features
-  dataset = dataset.flat_map(_slice_dataset_wrapper)
+  dataset = dataset.flat_map(
+    lambda x: 
+      _slice_dataset_wrapper(x, getClassOneHot(x))
+    )
 
   # Shuffle examples
   if shuffle:
