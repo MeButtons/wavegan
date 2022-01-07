@@ -1,12 +1,17 @@
+from numba.core.typeinfer import BuildListConstraint
+from numba.core.types.misc import ClassInstanceType
 from scipy.io.wavfile import read as wavread
 import numpy as np
 
 import tensorflow as tf
 
 import sys
+from tensorflow._api.v1 import data
 
 from tensorflow.python.framework.tensor_shape import Dimension
+from tensorflow.python.ops.gradients_impl import _AsList
 from tensorflow.python.ops.init_ops import TruncatedNormal
+from tensorflow.python.ops.math_ops import truediv
 
 
 def decode_audio(fp, fs=None, num_channels=1, normalize=False, fast_wav=False):
@@ -111,108 +116,136 @@ def decode_extract_and_batch(
     A tuple of np.float32 tensors representing audio waveforms.
       audio: [batch_size, slice_len, 1, nch]
   """
-  # Create dataset of filepaths  
-  dataset = tf.data.Dataset.from_tensor_slices(fps)
-  # Shuffle all filepaths every epoch
-  if shuffle:
-    dataset = dataset.shuffle(buffer_size=len(fps))
+  classDict = {}
+  for i in range(len(fps)):
+    currString = fps[i]
+    split = currString.split("\\")
+    currClass = split[-2]
+    if currClass in classDict.keys():
+      classDict[currClass].append(currString)
+    else:
+      classDict[currClass] = [currString]
+  
+  finalDataset = 1
+  dataset = 1
+  n_classes = len(classDict)
+  for i, (key, value) in enumerate(classDict.items()):
+    print(key)
+    oneHot = np.eye(n_classes)[i]
+    oneHot = oneHot.reshape(1,n_classes,1,1)
 
-  # Repeat
-  if repeat:
-    dataset = dataset.repeat()
+    #temp2 =[[[[1]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]]]]
 
-  def _decode_audio_shaped(fp):
-    _decode_audio_closure = lambda _fp: decode_audio(
-      _fp,
-      fs=decode_fs,
-      num_channels=decode_num_channels,
-      normalize=decode_normalize,
-      fast_wav=decode_fast_wav)
+    # Create dataset of filepaths  
+    dataset = tf.data.Dataset.from_tensor_slices(value)
+    # Shuffle all filepaths every epoch
+    #if shuffle:
+      #dataset = dataset.shuffle(buffer_size=len(fps))
 
-    audio = tf.py_func(
-        _decode_audio_closure,
-        [fp],
-        tf.float32,
-        stateful=False)
-    audio.set_shape([None, 1, decode_num_channels])
+    # Repeat
+    if repeat:
+      dataset = dataset.repeat()
 
-    return audio
+    def _decode_audio_shaped(fp):
+      _decode_audio_closure = lambda _fp: decode_audio(
+        _fp,
+        fs=decode_fs,
+        num_channels=decode_num_channels,
+        normalize=decode_normalize,
+        fast_wav=decode_fast_wav)
 
-  # Decode audio
-  dataset = dataset.map(
-      _decode_audio_shaped,
-      num_parallel_calls=decode_parallel_calls)
+      audio = tf.py_func(
+          _decode_audio_closure,
+          [fp],
+          tf.float32,
+          stateful=False)
+      audio.set_shape([None, 1, decode_num_channels])
 
-  # Parallel
-  def _slice(audio, oneHot):
-    # Calculate hop size
-    if slice_overlap_ratio < 0:
-      raise ValueError('Overlap ratio must be greater than 0')
-    slice_hop = int(round(slice_len * (1. - slice_overlap_ratio)) + 1e-4)
-    if slice_hop < 1:
-      raise ValueError('Overlap ratio too high')
+      return audio
 
-    # Randomize starting phase:
-    if slice_randomize_offset:
-      start = tf.random_uniform([], maxval=slice_len, dtype=tf.int32)
-      audio = audio[start:]
+    # Decode audio
+    dataset = dataset.map(
+        _decode_audio_shaped,
+        num_parallel_calls=decode_parallel_calls)
 
-    # Extract sliceuences
-    audio_slices = tf.contrib.signal.frame(
-        audio,
-        slice_len,
-        slice_hop,
-        pad_end=slice_pad_end,
-        pad_value=0,
-        axis=0)
+    # Parallel
+    def _slice(audio, oneHot):
+      # Calculate hop size
+      if slice_overlap_ratio < 0:
+        raise ValueError('Overlap ratio must be greater than 0')
+      slice_hop = int(round(slice_len * (1. - slice_overlap_ratio)) + 1e-4)
+      if slice_hop < 1:
+        raise ValueError('Overlap ratio too high')
 
+      # Randomize starting phase:
+      if slice_randomize_offset:
+        start = tf.random_uniform([], maxval=slice_len, dtype=tf.int32)
+        audio = audio[start:]
 
-    #audioDim = audio_slices.get_shape().as_list()[0]
-    #audioDim = tf.shape(audio_slices)[0]
-    #temp1 = tf.tile(oneHot, Dimension(None))
-    #newOneHot = tf.split(temp1, audioDim)
-    #newOneHot = np.resize(oneHot, (audioDim, oneHot.size))
-    
-
-    #audio_slices = tf.concat([audio_slices, newOneHot], axis=1)
+      # Extract sliceuences
+      audio_slices = tf.contrib.signal.frame(
+          audio,
+          slice_len,
+          slice_hop,
+          pad_end=slice_pad_end,
+          pad_value=0,
+          axis=0)
 
 
-    # Only use first slice if requested
-    if slice_first_only:
-      audio_slices = audio_slices[:1]
+      #audioDim = audio_slices.get_shape().as_list()[0]
+      #audioDim = tf.shape(audio_slices)[0]
+      #temp1 = tf.tile(oneHot, Dimension(None))
+      #newOneHot = tf.split(temp1, audioDim)
+      #newOneHot = np.resize(oneHot, (audioDim, oneHot.size))
+      
 
-    audio_slices = tf.concat([audio_slices, oneHot], axis=1)
-    return audio_slices
+      #audio_slices = tf.concat([audio_slices, newOneHot], axis=1)
 
-  def _slice_dataset_wrapper(audio, oneHot):
-    audio_slices = _slice(audio, oneHot)
-    return tf.data.Dataset.from_tensor_slices(audio_slices)
 
-  def getClassOneHot(x):
-    return tf.constant([[[[1]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]]]], dtype=tf.float32)
+      # Only use first slice if requested
+      if slice_first_only:
+        audio_slices = audio_slices[:1]
 
-  # Extract parallel sliceuences from both audio and features
-  dataset = dataset.flat_map(
-    lambda x: 
-      _slice_dataset_wrapper(x, getClassOneHot(x))
-    )
+      audio_slices = tf.concat([audio_slices, oneHot], axis=1)
+      return audio_slices
 
+    def _slice_dataset_wrapper(audio, oneHot):
+      audio_slices = _slice(audio, oneHot)
+      return tf.data.Dataset.from_tensor_slices(audio_slices)
+
+  
+
+    # Extract parallel sliceuences from both audio and features
+    #for i in range(len(fps)):
+      #dataset[i] = _slice_dataset_wrapper(dataset[i], getClassOneHot(fps[i]))
+    dataset = dataset.flat_map(
+      lambda x: 
+        _slice_dataset_wrapper(x, oneHot)
+      )
+
+    if finalDataset ==1:
+      finalDataset = dataset
+    else:
+      finalDataset = finalDataset.concatenate(dataset)
+  if finalDataset == dataset:
+    a= 4
+  print("Done with concatonating datasets")
   # Shuffle examples
   if shuffle:
-    dataset = dataset.shuffle(buffer_size=shuffle_buffer_size)
+    finalDataset = finalDataset.shuffle(buffer_size=shuffle_buffer_size)
 
   # Make batches
-  dataset = dataset.batch(batch_size, drop_remainder=True)
-
+  finalDataset = finalDataset.batch(batch_size, drop_remainder=True)
+  print("start prefetching")
   # Prefetch a number of batches
   if prefetch_size is not None:
-    dataset = dataset.prefetch(prefetch_size)
+    finalDataset = finalDataset.prefetch(prefetch_size)
     if prefetch_gpu_num is not None and prefetch_gpu_num >= 0:
-      dataset = dataset.apply(
+      finalDataset = finalDataset.apply(
           tf.data.experimental.prefetch_to_device(
             '/device:GPU:{}'.format(prefetch_gpu_num)))
-
+  print("Done with prefetching")
   # Get tensors
-  iterator = dataset.make_one_shot_iterator()
-  
+  iterator = finalDataset.make_one_shot_iterator()
+  print("Done with one shot iterator")
   return iterator.get_next()

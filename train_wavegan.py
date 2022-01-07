@@ -39,16 +39,25 @@ def train(fps, args):
         prefetch_size=args.train_batch_size * 4,
         prefetch_gpu_num=args.data_prefetch_gpu_num)[:, :, 0]
 
+  classDict = {}
+  for i in range(len(fps)):
+    currString = fps[i]
+    split = currString.split("\\")
+    currClass = split[-2]
+    if currClass in classDict.keys():
+      classDict[currClass].append(currString)
+    else:
+      classDict[currClass] = [currString]
   # Make z vector
-  n_classes = 30
+  n_classes = len(classDict)
   z = tf.random_uniform([args.train_batch_size, args.wavegan_latent_dim], -1., 1., dtype=tf.float32)
-  oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
-  oneHot=np.resize(oneHot, (64, oneHot.size))
+  #oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+  #oneHot=np.resize(oneHot, (64, oneHot.size))
 
-  #oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
-  #z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
+  oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
+  z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
   z = tf.concat([z, oneHot], axis=1)
-
+  print("Making generator")
   # Make generator
   with tf.variable_scope('G'):
     G_z = WaveGANGenerator(z, train=True, **args.wavegan_g_kwargs)
@@ -80,7 +89,7 @@ def train(fps, args):
   tf.summary.histogram('G_z_rms_batch', G_z_rms)
   tf.summary.scalar('x_rms', tf.reduce_mean(x_rms))
   tf.summary.scalar('G_z_rms', tf.reduce_mean(G_z_rms))
-
+  print("Making discriminator")
   # Make real discriminator
   with tf.name_scope('D_x'), tf.variable_scope('D'):
     D_x = WaveGANDiscriminator(x, **args.wavegan_d_kwargs)
@@ -97,7 +106,7 @@ def train(fps, args):
     print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
   print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
   print('-' * 80)
-
+  print("Making fake discriminator")
   # Make fake discriminator
   with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
     D_G_z = WaveGANDiscriminator(G_z, **args.wavegan_d_kwargs)
