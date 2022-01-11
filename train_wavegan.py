@@ -16,11 +16,20 @@ from six.moves import xrange
 import loader
 from wavegan import WaveGANGenerator, WaveGANDiscriminator
 
+cluster_specification = {
+    "ps": ["localhost:2222"], # list of parameter servers,
+    "worker": ["localhost:2223", "localhost:2224"] # list of workers
+}
 
 """
   Trains a WaveGAN
 """
 def train(fps, args):
+  cluster_spec = tf.train.ClusterSpec(cluster_specification)
+  server = tf.train.Server(cluster_spec, job_name="worker", task_index=args.task_index)
+  worker_device = "/job:worker/task:{}".format(task_index)
+
+
   with tf.name_scope('loader'):
     x = loader.decode_extract_and_batch(
         fps,
@@ -233,24 +242,26 @@ def train(fps, args):
   #   tempSess.run(G_train_op)
   # Run training
   scaffold = tf.train.Scaffold(saver=tf.train.Saver(max_to_keep=10))
-  with tf.train.MonitoredTrainingSession(
-      checkpoint_dir=args.train_dir,
-      save_checkpoint_secs=args.train_save_secs,
-      save_summaries_secs=args.train_summary_secs,
-      scaffold = scaffold) as sess:
-    print('-' * 80)
-    print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
-    while True:
-      # Train discriminator
-      for i in xrange(args.wavegan_disc_nupdates):
-        sess.run(D_train_op)
+  with tf.device(tf.train.replica_device_setter(worker_device=worker_device,
+                                                  cluster=cluster_spec)):
+    with tf.train.MonitoredTrainingSession(
+        checkpoint_dir=args.train_dir,
+        save_checkpoint_secs=args.train_save_secs,
+        save_summaries_secs=args.train_summary_secs,
+        scaffold = scaffold) as sess:
+      print('-' * 80)
+      print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
+      while True:
+        # Train discriminator
+        for i in xrange(args.wavegan_disc_nupdates):
+          sess.run(D_train_op)
 
-        # Enforce Lipschitz constraint for WGAN
-        if D_clip_weights is not None:
-          sess.run(D_clip_weights)
+          # Enforce Lipschitz constraint for WGAN
+          if D_clip_weights is not None:
+            sess.run(D_clip_weights)
 
-      # Train generator
-      sess.run(G_train_op)
+        # Train generator
+        sess.run(G_train_op)
 
 
 """
@@ -566,6 +577,7 @@ if __name__ == '__main__':
   parser.add_argument('mode', type=str, choices=['train', 'preview', 'incept', 'infer'])
   parser.add_argument('train_dir', type=str,
       help='Training directory')
+  parser.add_argument('task_index', type=int)
 
   data_args = parser.add_argument_group('Data')
   data_args.add_argument('--data_dir', type=str,
