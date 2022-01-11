@@ -27,224 +27,226 @@ cluster_specification = {
 def train(fps, args):
   cluster_spec = tf.train.ClusterSpec(cluster_specification)
   server = tf.train.Server(cluster_spec, job_name="worker", task_index=args.task_index)
-  worker_device = "/job:worker/task:{}".format(task_index)
+  worker_device = "/job:worker/task:{}".format(args.task_index)
 
-
-  with tf.name_scope('loader'):
-    x = loader.decode_extract_and_batch(
-        fps,
-        batch_size=args.train_batch_size,
-        slice_len=args.data_slice_len,
-        decode_fs=args.data_sample_rate,
-        decode_num_channels=args.data_num_channels,
-        decode_fast_wav=args.data_fast_wav,
-        decode_parallel_calls=4,
-        slice_randomize_offset=False if args.data_first_slice else True,
-        slice_first_only=args.data_first_slice,
-        slice_overlap_ratio=0. if args.data_first_slice else args.data_overlap_ratio,
-        slice_pad_end=True if args.data_first_slice else args.data_pad_end,
-        repeat=True,
-        shuffle=True,
-        shuffle_buffer_size=4096,
-        prefetch_size=args.train_batch_size * 4,
-        prefetch_gpu_num=args.data_prefetch_gpu_num)[:, :, 0]
-
-  classDict = {}
-  colab = False
-  for i in range(len(fps)):
-    currString = fps[i]
-    if colab:
-      split = currString.split("/")
-    else:
-      split = currString.split("\\")
-    currClass = split[-2]
-    if currClass in classDict.keys():
-      classDict[currClass].append(currString)
-    else:
-      classDict[currClass] = [currString]
-  # Make z vector
-  n_classes = len(classDict)
-  z = tf.random_uniform([args.train_batch_size, args.wavegan_latent_dim], -1., 1., dtype=tf.float32)
-  #oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
-  #oneHot=np.resize(oneHot, (64, oneHot.size))
-
-  oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
-  z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
-  z = tf.concat([z, oneHot], axis=1)
-  print("Making generator")
-  # Make generator
-  with tf.variable_scope('G'):
-    G_z = WaveGANGenerator(z, train=True, **args.wavegan_g_kwargs)
-    if args.wavegan_genr_pp:
-      with tf.variable_scope('pp_filt'):
-        G_z = tf.layers.conv1d(G_z, 1, args.wavegan_genr_pp_len, use_bias=False, padding='same')
-  G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
-
-  oneHot = oneHot[:, :, np.newaxis]
-  G_z = tf.concat([G_z, oneHot], axis=1)
-
-  # Print G summary
-  print('-' * 80)
-  print('Generator vars')
-  nparams = 0
-  for v in G_vars:
-    v_shape = v.get_shape().as_list()
-    v_n = reduce(lambda x, y: x * y, v_shape)
-    nparams += v_n
-    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
-  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
-
-  # Summarize
-  tf.summary.audio('x', x, args.data_sample_rate)
-  tf.summary.audio('G_z', G_z, args.data_sample_rate)
-  G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :-30, 0]), axis=1))
-  x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :-30, 0]), axis=1))
-  tf.summary.histogram('x_rms_batch', x_rms)
-  tf.summary.histogram('G_z_rms_batch', G_z_rms)
-  tf.summary.scalar('x_rms', tf.reduce_mean(x_rms))
-  tf.summary.scalar('G_z_rms', tf.reduce_mean(G_z_rms))
-  print("Making discriminator")
-  # Make real discriminator
-  with tf.name_scope('D_x'), tf.variable_scope('D'):
-    D_x = WaveGANDiscriminator(x, **args.wavegan_d_kwargs)
-  D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
-
-  # Print D summary
-  print('-' * 80)
-  print('Discriminator vars')
-  nparams = 0
-  for v in D_vars:
-    v_shape = v.get_shape().as_list()
-    v_n = reduce(lambda x, y: x * y, v_shape)
-    nparams += v_n
-    print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
-  print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
-  print('-' * 80)
-  print("Making fake discriminator")
-  # Make fake discriminator
-  with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
-    D_G_z = WaveGANDiscriminator(G_z, **args.wavegan_d_kwargs)
-
-  # Create loss
-  D_clip_weights = None
-  if args.wavegan_loss == 'dcgan':
-    fake = tf.zeros([args.train_batch_size], dtype=tf.float32)
-    real = tf.ones([args.train_batch_size], dtype=tf.float32)
-
-    G_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
-      logits=D_G_z,
-      labels=real
-    ))
-
-    D_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
-      logits=D_G_z,
-      labels=fake
-    ))
-    D_loss += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
-      logits=D_x,
-      labels=real
-    ))
-
-    D_loss /= 2.
-  elif args.wavegan_loss == 'lsgan':
-    G_loss = tf.reduce_mean((D_G_z - 1.) ** 2)
-    D_loss = tf.reduce_mean((D_x - 1.) ** 2)
-    D_loss += tf.reduce_mean(D_G_z ** 2)
-    D_loss /= 2.
-  elif args.wavegan_loss == 'wgan':
-    G_loss = -tf.reduce_mean(D_G_z)
-    D_loss = tf.reduce_mean(D_G_z) - tf.reduce_mean(D_x)
-
-    with tf.name_scope('D_clip_weights'):
-      clip_ops = []
-      for var in D_vars:
-        clip_bounds = [-.01, .01]
-        clip_ops.append(
-          tf.assign(
-            var,
-            tf.clip_by_value(var, clip_bounds[0], clip_bounds[1])
-          )
-        )
-      D_clip_weights = tf.group(*clip_ops)
-  elif args.wavegan_loss == 'wgan-gp':
-    G_loss = -tf.reduce_mean(D_G_z)
-    D_loss = tf.reduce_mean(D_G_z) - tf.reduce_mean(D_x)
-
-    alpha = tf.random_uniform(shape=[args.train_batch_size, 1, 1], minval=0., maxval=1.)
-    differences = G_z - x
-    interpolates = x + (alpha * differences)
-    with tf.name_scope('D_interp'), tf.variable_scope('D', reuse=True):
-      D_interp = WaveGANDiscriminator(interpolates, **args.wavegan_d_kwargs)
-
-    LAMBDA = 10
-    gradients = tf.gradients(D_interp, [interpolates])[0]
-    slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1, 2]))
-    gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2.)
-    D_loss += LAMBDA * gradient_penalty
-  else:
-    raise NotImplementedError()
-
-  tf.summary.scalar('G_loss', G_loss)
-  tf.summary.scalar('D_loss', D_loss)
-
-  # Create (recommended) optimizer
-  if args.wavegan_loss == 'dcgan':
-    G_opt = tf.train.AdamOptimizer(
-        learning_rate=2e-4,
-        beta1=0.5)
-    D_opt = tf.train.AdamOptimizer(
-        learning_rate=2e-4,
-        beta1=0.5)
-  elif args.wavegan_loss == 'lsgan':
-    G_opt = tf.train.RMSPropOptimizer(
-        learning_rate=1e-4)
-    D_opt = tf.train.RMSPropOptimizer(
-        learning_rate=1e-4)
-  elif args.wavegan_loss == 'wgan':
-    G_opt = tf.train.RMSPropOptimizer(
-        learning_rate=5e-5)
-    D_opt = tf.train.RMSPropOptimizer(
-        learning_rate=5e-5)
-  elif args.wavegan_loss == 'wgan-gp':
-    G_opt = tf.train.AdamOptimizer(
-        learning_rate=1e-4,
-        beta1=0.5,
-        beta2=0.9)
-    D_opt = tf.train.AdamOptimizer(
-        learning_rate=1e-4,
-        beta1=0.5,
-        beta2=0.9)
-  else:
-    raise NotImplementedError()
-
-  # Create training ops
-  G_train_op = G_opt.minimize(G_loss, var_list=G_vars,
-      global_step=tf.train.get_or_create_global_step())
-  D_train_op = D_opt.minimize(D_loss, var_list=D_vars)
-
-  # tempSess = tf.train.MonitoredTrainingSession(
-  #     checkpoint_dir=args.train_dir,
-  #     save_checkpoint_secs=args.train_save_secs,
-  #     save_summaries_secs=args.train_summary_secs)
-  # tempSess = tf_debug.LocalCLIDebugWrapperSession(tempSess)
-  # print('-' * 80)
-  # print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
-  # while True:
-  #   # Train discriminator
-  #   for i in xrange(args.wavegan_disc_nupdates):
-  #     tempSess.run(D_train_op)
-
-  #     # Enforce Lipschitz constraint for WGAN
-  #     if D_clip_weights is not None:
-  #       tempSess.run(D_clip_weights)
-
-  #   # Train generator
-  #   tempSess.run(G_train_op)
-  # Run training
-  scaffold = tf.train.Scaffold(saver=tf.train.Saver(max_to_keep=10))
   with tf.device(tf.train.replica_device_setter(worker_device=worker_device,
                                                   cluster=cluster_spec)):
+    with tf.name_scope('loader'):
+      x = loader.decode_extract_and_batch(
+          fps,
+          batch_size=args.train_batch_size,
+          slice_len=args.data_slice_len,
+          decode_fs=args.data_sample_rate,
+          decode_num_channels=args.data_num_channels,
+          decode_fast_wav=args.data_fast_wav,
+          decode_parallel_calls=4,
+          slice_randomize_offset=False if args.data_first_slice else True,
+          slice_first_only=args.data_first_slice,
+          slice_overlap_ratio=0. if args.data_first_slice else args.data_overlap_ratio,
+          slice_pad_end=True if args.data_first_slice else args.data_pad_end,
+          repeat=True,
+          shuffle=True,
+          shuffle_buffer_size=4096,
+          prefetch_size=args.train_batch_size * 4,
+          prefetch_gpu_num=args.data_prefetch_gpu_num)[:, :, 0]
+    
+    classDict = {}
+    colab = False
+    for i in range(len(fps)):
+      currString = fps[i]
+      if colab:
+        split = currString.split("/")
+      else:
+        split = currString.split("\\")
+      currClass = split[-2]
+      if currClass in classDict.keys():
+        classDict[currClass].append(currString)
+      else:
+        classDict[currClass] = [currString]
+    # Make z vector
+    n_classes = len(classDict)
+    z = tf.random_uniform([args.train_batch_size, args.wavegan_latent_dim], -1., 1., dtype=tf.float32)
+    #oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+    #oneHot=np.resize(oneHot, (64, oneHot.size))
+
+    oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
+    z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
+    z = tf.concat([z, oneHot], axis=1)
+    print("Making generator")
+    # Make generator
+    with tf.variable_scope('G'):
+      G_z = WaveGANGenerator(z, train=True, **args.wavegan_g_kwargs)
+      if args.wavegan_genr_pp:
+        with tf.variable_scope('pp_filt'):
+          G_z = tf.layers.conv1d(G_z, 1, args.wavegan_genr_pp_len, use_bias=False, padding='same')
+    G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
+
+    oneHot = oneHot[:, :, np.newaxis]
+    G_z = tf.concat([G_z, oneHot], axis=1)
+
+    # Print G summary
+    print('-' * 80)
+    print('Generator vars')
+    nparams = 0
+    for v in G_vars:
+      v_shape = v.get_shape().as_list()
+      v_n = reduce(lambda x, y: x * y, v_shape)
+      nparams += v_n
+      print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+    print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
+
+    # Summarize
+    tf.summary.audio('x', x, args.data_sample_rate)
+    tf.summary.audio('G_z', G_z, args.data_sample_rate)
+    G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :-30, 0]), axis=1))
+    x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :-30, 0]), axis=1))
+    tf.summary.histogram('x_rms_batch', x_rms)
+    tf.summary.histogram('G_z_rms_batch', G_z_rms)
+    tf.summary.scalar('x_rms', tf.reduce_mean(x_rms))
+    tf.summary.scalar('G_z_rms', tf.reduce_mean(G_z_rms))
+    print("Making discriminator")
+    # Make real discriminator
+    with tf.name_scope('D_x'), tf.variable_scope('D'):
+      D_x = WaveGANDiscriminator(x, **args.wavegan_d_kwargs)
+    D_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='D')
+
+    # Print D summary
+    print('-' * 80)
+    print('Discriminator vars')
+    nparams = 0
+    for v in D_vars:
+      v_shape = v.get_shape().as_list()
+      v_n = reduce(lambda x, y: x * y, v_shape)
+      nparams += v_n
+      print('{} ({}): {}'.format(v.get_shape().as_list(), v_n, v.name))
+    print('Total params: {} ({:.2f} MB)'.format(nparams, (float(nparams) * 4) / (1024 * 1024)))
+    print('-' * 80)
+    print("Making fake discriminator")
+    # Make fake discriminator
+    with tf.name_scope('D_G_z'), tf.variable_scope('D', reuse=True):
+      D_G_z = WaveGANDiscriminator(G_z, **args.wavegan_d_kwargs)
+
+    # Create loss
+    D_clip_weights = None
+    if args.wavegan_loss == 'dcgan':
+      fake = tf.zeros([args.train_batch_size], dtype=tf.float32)
+      real = tf.ones([args.train_batch_size], dtype=tf.float32)
+
+      G_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=D_G_z,
+        labels=real
+      ))
+
+      D_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=D_G_z,
+        labels=fake
+      ))
+      D_loss += tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=D_x,
+        labels=real
+      ))
+
+      D_loss /= 2.
+    elif args.wavegan_loss == 'lsgan':
+      G_loss = tf.reduce_mean((D_G_z - 1.) ** 2)
+      D_loss = tf.reduce_mean((D_x - 1.) ** 2)
+      D_loss += tf.reduce_mean(D_G_z ** 2)
+      D_loss /= 2.
+    elif args.wavegan_loss == 'wgan':
+      G_loss = -tf.reduce_mean(D_G_z)
+      D_loss = tf.reduce_mean(D_G_z) - tf.reduce_mean(D_x)
+
+      with tf.name_scope('D_clip_weights'):
+        clip_ops = []
+        for var in D_vars:
+          clip_bounds = [-.01, .01]
+          clip_ops.append(
+            tf.assign(
+              var,
+              tf.clip_by_value(var, clip_bounds[0], clip_bounds[1])
+            )
+          )
+        D_clip_weights = tf.group(*clip_ops)
+    elif args.wavegan_loss == 'wgan-gp':
+      G_loss = -tf.reduce_mean(D_G_z)
+      D_loss = tf.reduce_mean(D_G_z) - tf.reduce_mean(D_x)
+
+      alpha = tf.random_uniform(shape=[args.train_batch_size, 1, 1], minval=0., maxval=1.)
+      differences = G_z - x
+      interpolates = x + (alpha * differences)
+      with tf.name_scope('D_interp'), tf.variable_scope('D', reuse=True):
+        D_interp = WaveGANDiscriminator(interpolates, **args.wavegan_d_kwargs)
+
+      LAMBDA = 10
+      gradients = tf.gradients(D_interp, [interpolates])[0]
+      slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1, 2]))
+      gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2.)
+      D_loss += LAMBDA * gradient_penalty
+    else:
+      raise NotImplementedError()
+
+    tf.summary.scalar('G_loss', G_loss)
+    tf.summary.scalar('D_loss', D_loss)
+
+    # Create (recommended) optimizer
+    if args.wavegan_loss == 'dcgan':
+      G_opt = tf.train.AdamOptimizer(
+          learning_rate=2e-4,
+          beta1=0.5)
+      D_opt = tf.train.AdamOptimizer(
+          learning_rate=2e-4,
+          beta1=0.5)
+    elif args.wavegan_loss == 'lsgan':
+      G_opt = tf.train.RMSPropOptimizer(
+          learning_rate=1e-4)
+      D_opt = tf.train.RMSPropOptimizer(
+          learning_rate=1e-4)
+    elif args.wavegan_loss == 'wgan':
+      G_opt = tf.train.RMSPropOptimizer(
+          learning_rate=5e-5)
+      D_opt = tf.train.RMSPropOptimizer(
+          learning_rate=5e-5)
+    elif args.wavegan_loss == 'wgan-gp':
+      G_opt = tf.train.AdamOptimizer(
+          learning_rate=1e-4,
+          beta1=0.5,
+          beta2=0.9)
+      D_opt = tf.train.AdamOptimizer(
+          learning_rate=1e-4,
+          beta1=0.5,
+          beta2=0.9)
+    else:
+      raise NotImplementedError()
+
+    # Create training ops
+    G_train_op = G_opt.minimize(G_loss, var_list=G_vars,
+        global_step=tf.train.get_or_create_global_step())
+    D_train_op = D_opt.minimize(D_loss, var_list=D_vars)
+
+    # tempSess = tf.train.MonitoredTrainingSession(
+    #     checkpoint_dir=args.train_dir,
+    #     save_checkpoint_secs=args.train_save_secs,
+    #     save_summaries_secs=args.train_summary_secs)
+    # tempSess = tf_debug.LocalCLIDebugWrapperSession(tempSess)
+    # print('-' * 80)
+    # print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
+    # while True:
+    #   # Train discriminator
+    #   for i in xrange(args.wavegan_disc_nupdates):
+    #     tempSess.run(D_train_op)
+
+    #     # Enforce Lipschitz constraint for WGAN
+    #     if D_clip_weights is not None:
+    #       tempSess.run(D_clip_weights)
+
+    #   # Train generator
+    #   tempSess.run(G_train_op)
+    # Run training
+    scaffold = tf.train.Scaffold(saver=tf.train.Saver(max_to_keep=10))
+    
     with tf.train.MonitoredTrainingSession(
+        master=server.target,
+        is_chief=args.task_index == 0,
         checkpoint_dir=args.train_dir,
         save_checkpoint_secs=args.train_save_secs,
         save_summaries_secs=args.train_summary_secs,
