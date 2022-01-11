@@ -232,10 +232,12 @@ def train(fps, args):
   #   # Train generator
   #   tempSess.run(G_train_op)
   # Run training
+  scaffold = tf.train.Scaffold(saver=tf.train.Saver(max_to_keep=10))
   with tf.train.MonitoredTrainingSession(
       checkpoint_dir=args.train_dir,
       save_checkpoint_secs=args.train_save_secs,
-      save_summaries_secs=args.train_summary_secs) as sess:
+      save_summaries_secs=args.train_summary_secs,
+      scaffold = scaffold) as sess:
     print('-' * 80)
     print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
     while True:
