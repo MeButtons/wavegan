@@ -690,7 +690,12 @@ if __name__ == '__main__':
   })
 
   if args.mode == 'train':
-    fps = glob.glob(os.path.join(args.data_dir, '*'))
+    sortedFolderList = sorted(glob.glob(args.data_dir))
+    fps = []
+    for i in range(len(sortedFolderList)):
+      sortedFileList = sorted(glob.glob(os.path.join(sortedFolderList[i], '*')))
+      for j in range(len(sortedFileList)):
+        fps.append(sortedFileList[j])
     if len(fps) == 0:
       raise Exception('Did not find any audio files in specified directory')
     print('Found {} audio files in specified directory'.format(len(fps)))
