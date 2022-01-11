@@ -1,3 +1,4 @@
+from typing_extensions import final
 from numba.core.typeinfer import BuildListConstraint
 from numba.core.types.misc import ClassInstanceType
 from scipy.io.wavfile import read as wavread
@@ -117,16 +118,20 @@ def decode_extract_and_batch(
       audio: [batch_size, slice_len, 1, nch]
   """
   classDict = {}
+  colab = False
   for i in range(len(fps)):
     currString = fps[i]
-    split = currString.split("\\")
+    if colab:
+      split = currString.split("/")
+    else:
+      split = currString.split("\\")
     currClass = split[-2]
     if currClass in classDict.keys():
       classDict[currClass].append(currString)
     else:
       classDict[currClass] = [currString]
   
-  finalDataset = 1
+  finalDataset = []
   dataset = 1
   n_classes = len(classDict)
   for i, (key, value) in enumerate(classDict.items()):
@@ -135,7 +140,6 @@ def decode_extract_and_batch(
     oneHot = oneHot.reshape(1,n_classes,1,1)
 
     #temp2 =[[[[1]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]],[[0]]]]
-
     # Create dataset of filepaths  
     dataset = tf.data.Dataset.from_tensor_slices(value)
     # Shuffle all filepaths every epoch
@@ -205,7 +209,6 @@ def decode_extract_and_batch(
       # Only use first slice if requested
       if slice_first_only:
         audio_slices = audio_slices[:1]
-
       audio_slices = tf.concat([audio_slices, oneHot], axis=1)
       return audio_slices
 
@@ -223,12 +226,9 @@ def decode_extract_and_batch(
         _slice_dataset_wrapper(x, oneHot)
       )
 
-    if finalDataset ==1:
-      finalDataset = dataset
-    else:
-      finalDataset = finalDataset.concatenate(dataset)
-  if finalDataset == dataset:
-    a= 4
+    finalDataset.append(dataset)
+
+  finalDataset = tf.contrib.data.sample_from_datasets(finalDataset)
   print("Done with concatonating datasets")
   # Shuffle examples
   if shuffle:

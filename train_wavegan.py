@@ -10,6 +10,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python import debug as tf_debug
 from six.moves import xrange
 
 import loader
@@ -40,9 +41,13 @@ def train(fps, args):
         prefetch_gpu_num=args.data_prefetch_gpu_num)[:, :, 0]
 
   classDict = {}
+  colab = False
   for i in range(len(fps)):
     currString = fps[i]
-    split = currString.split("\\")
+    if colab:
+      split = currString.split("/")
+    else:
+      split = currString.split("\\")
     currClass = split[-2]
     if currClass in classDict.keys():
       classDict[currClass].append(currString)
@@ -83,8 +88,8 @@ def train(fps, args):
   # Summarize
   tf.summary.audio('x', x, args.data_sample_rate)
   tf.summary.audio('G_z', G_z, args.data_sample_rate)
-  G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :, 0]), axis=1))
-  x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :, 0]), axis=1))
+  G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :-30, 0]), axis=1))
+  x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :-30, 0]), axis=1))
   tf.summary.histogram('x_rms_batch', x_rms)
   tf.summary.histogram('G_z_rms_batch', G_z_rms)
   tf.summary.scalar('x_rms', tf.reduce_mean(x_rms))
@@ -208,6 +213,24 @@ def train(fps, args):
       global_step=tf.train.get_or_create_global_step())
   D_train_op = D_opt.minimize(D_loss, var_list=D_vars)
 
+  # tempSess = tf.train.MonitoredTrainingSession(
+  #     checkpoint_dir=args.train_dir,
+  #     save_checkpoint_secs=args.train_save_secs,
+  #     save_summaries_secs=args.train_summary_secs)
+  # tempSess = tf_debug.LocalCLIDebugWrapperSession(tempSess)
+  # print('-' * 80)
+  # print('Training has started. Please use \'tensorboard --logdir={}\' to monitor.'.format(args.train_dir))
+  # while True:
+  #   # Train discriminator
+  #   for i in xrange(args.wavegan_disc_nupdates):
+  #     tempSess.run(D_train_op)
+
+  #     # Enforce Lipschitz constraint for WGAN
+  #     if D_clip_weights is not None:
+  #       tempSess.run(D_clip_weights)
+
+  #   # Train generator
+  #   tempSess.run(G_train_op)
   # Run training
   with tf.train.MonitoredTrainingSession(
       checkpoint_dir=args.train_dir,
