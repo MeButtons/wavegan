@@ -17,7 +17,7 @@ import loader
 from wavegan import WaveGANGenerator, WaveGANDiscriminator
 
 cluster_specification = {
-    "ps": ["192.168.1.145:2222"], # list of parameter servers,
+    "ps": ["192.168.1.88:2222"], # list of parameter servers,
     "worker": ["192.168.1.145:2223", "192.168.1.68:2224"] # list of workers
 }
 
