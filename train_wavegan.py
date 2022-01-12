@@ -18,7 +18,7 @@ from wavegan import WaveGANGenerator, WaveGANDiscriminator
 
 cluster_specification = {
     "ps": ["192.168.1.145:2222"], # list of parameter servers,
-    "worker": ["localhost:2223", "localhost:2224"] # list of workers
+    "worker": ["192.168.1.145:2223", "192.168.1.68:2224"] # list of workers
 }
 
 """
