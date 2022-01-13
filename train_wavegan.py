@@ -59,8 +59,10 @@ def train(fps, args):
   #oneHot = np.array([1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
   #oneHot=np.resize(oneHot, (64, oneHot.size))
 
-  oneHot = np.eye(n_classes)[np.random.choice(n_classes, args.train_batch_size)]
-  z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
+  oneHot = x[:,-30:,:]
+  oneHot = tf.squeeze(oneHot)
+  x = x[:,:-30,:]
+  #z = tf.keras.layers.Concatenate(axis=1)([z, oneHot])
   z = tf.concat([z, oneHot], axis=1)
   print("Making generator")
   # Make generator
@@ -71,8 +73,8 @@ def train(fps, args):
         G_z = tf.layers.conv1d(G_z, 1, args.wavegan_genr_pp_len, use_bias=False, padding='same')
   G_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='G')
 
-  oneHot = oneHot[:, :, np.newaxis]
-  G_z = tf.concat([G_z, oneHot], axis=1)
+  # oneHot = oneHot[:, :, np.newaxis]
+  # G_z = tf.concat([G_z, oneHot], axis=1)
 
   # Print G summary
   print('-' * 80)
@@ -88,8 +90,8 @@ def train(fps, args):
   # Summarize
   tf.summary.audio('x', x, args.data_sample_rate)
   tf.summary.audio('G_z', G_z, args.data_sample_rate)
-  G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :-30, 0]), axis=1))
-  x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :-30, 0]), axis=1))
+  G_z_rms = tf.sqrt(tf.reduce_mean(tf.square(G_z[:, :, 0]), axis=1))
+  x_rms = tf.sqrt(tf.reduce_mean(tf.square(x[:, :, 0]), axis=1))
   tf.summary.histogram('x_rms_batch', x_rms)
   tf.summary.histogram('G_z_rms_batch', G_z_rms)
   tf.summary.scalar('x_rms', tf.reduce_mean(x_rms))

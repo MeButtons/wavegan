@@ -1,6 +1,5 @@
 from re import A
 import tensorflow as tf
-from tensorflow.python.ops.gradients_impl import _HasAnyNotNoneGrads
 
 
 def conv1d_transpose(
